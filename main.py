@@ -34,17 +34,15 @@ def lire_fichier(chemin):
     return n, m, couts, provisions, demandes
 
 
-def generer_aleatoire(n, m, max_cout=99, max_dispo=500):
-    """Génère un problème équilibré aléatoire."""
-    provisions = [random.randint(50, max_dispo) for _ in range(n)]
-    demandes   = [random.randint(50, max_dispo) for _ in range(m)]
-    # Rééquilibrer
-    diff = sum(provisions) - sum(demandes)
-    if diff > 0:
-        demandes[-1] += diff
-    elif diff < 0:
-        provisions[-1] -= diff
-    couts = [[random.randint(1, max_cout) for _ in range(m)] for _ in range(n)]
+def generer_aleatoire(n, m):
+    """Génère un problème équilibré selon la méthode de la matrice temp (consignes §3.3.1) :
+    temp[i][j] ∈ [1,100]  →  P_i = somme ligne i,  C_j = somme colonne j.
+    Garantit ΣP_i = ΣC_j sans ajustement.
+    """
+    couts = [[random.randint(1, 100) for _ in range(m)] for _ in range(n)]
+    temp  = [[random.randint(1, 100) for _ in range(m)] for _ in range(n)]
+    provisions = [sum(temp[i])    for i in range(n)]
+    demandes   = [sum(temp[i][j] for i in range(n)) for j in range(m)]
     return n, m, couts, provisions, demandes
 
 

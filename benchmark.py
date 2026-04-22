@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """
-Benchmark de complexité — Problème de transport
-Mesure θ (itérations MODI) et t (temps total) pour NO et BH.
+Benchmark de complexité — Problème de transport  (§3.3 des consignes)
+
+Définitions (conformes au sujet) :
+  θNO(n)  = temps d'exécution de l'algorithme Nord-Ouest seul
+  θBH(n)  = temps d'exécution de l'algorithme Balas-Hammer seul
+  tNO(n)  = temps du marche-pied avec potentiel (départ Nord-Ouest)
+  tBH(n)  = temps du marche-pied avec potentiel (départ Balas-Hammer)
+
+Génération (§3.3.1) :
+  temp[i][j] ∈ [1,100]  →  P_i = Σ_j temp[i][j],  C_j = Σ_i temp[i][j]
+  Garantit l'équilibre Σ P_i = Σ C_j sans correction.
 
 Usage :
-  python3 benchmark.py          → lance le benchmark complet puis trace les courbes
-  python3 benchmark.py plot     → trace les courbes depuis le CSV existant (reprise)
-
-Les résultats sont sauvegardés ligne par ligne dans CSV_FILE,
-ce qui permet de reprendre si le programme est interrompu.
+  python3 benchmark.py        → benchmark complet + graphiques
+  python3 benchmark.py plot   → graphiques depuis le CSV existant
 """
 
 import numpy as np
@@ -19,34 +25,36 @@ import sys
 from collections import deque
 
 import matplotlib
-matplotlib.use('Agg')   # compatible headless (pas besoin d'écran)
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # ─────────────────────────────────────────────
 # PARAMÈTRES
 # ─────────────────────────────────────────────
 
-N_VALUES   = [10, 40, 100, 400, 1000, 4000, 10000]
-N_RUNS     = 100
-CSV_FILE   = "resultats_benchmark.csv"
-TIMEOUT_S  = 300        # secondes max par run individuel
-MEM_LIMIT_MB = 4000     # skip si mémoire estimée > 4 GB
+N_VALUES     = [10, 40, 100, 400, 1000, 4000, 10000]
+N_RUNS       = 100
+CSV_FILE     = "resultats_benchmark.csv"
+TIMEOUT_S    = 300      # max secondes pour le marche-pied par run
+MEM_LIMIT_MB = 4000     # skip si estimation mémoire > 4 GB
 
 
 # ════════════════════════════════════════════
-# 1. GÉNÉRATION ALÉATOIRE (numpy)
+# 1. GÉNÉRATION (§3.3.1)
 # ════════════════════════════════════════════
 
 def gen_random(n):
-    """Génère un problème de transport carré n×n équilibré."""
-    couts = np.random.randint(1, 100, (n, n), dtype=np.int32)
-    p = np.random.randint(50, 500, n, dtype=np.int64)
-    d = np.random.randint(50, 500, n, dtype=np.int64)
-    diff = int(p.sum() - d.sum())
-    if diff > 0:
-        d[-1] += diff
-    elif diff < 0:
-        p[-1] -= diff
+    """Génère un problème carré n×n équilibré selon les consignes :
+    - a[i,j]    ∈ [1,100]   entier (coûts)
+    - temp[i,j] ∈ [1,100]   entier
+    - P_i = Σ_j temp[i,j]   (somme de la ligne i de temp)
+    - C_j = Σ_i temp[i,j]   (somme de la colonne j de temp)
+    Équilibre automatique : Σ P_i = Σ C_j = Σ_ij temp[i,j].
+    """
+    couts = np.random.randint(1, 101, (n, n), dtype=np.int32)
+    temp  = np.random.randint(1, 101, (n, n), dtype=np.int64)
+    p     = temp.sum(axis=1)   # provisions
+    d     = temp.sum(axis=0)   # demandes
     return couts, p, d
 
 
@@ -56,20 +64,19 @@ def gen_random(n):
 
 def nord_ouest_np(n, p, d):
     """Méthode du coin Nord-Ouest.
-    alloc[i,j] = -1 → hors base, ≥0 → en base.
+    alloc[i,j] = -1 → hors base  /  ≥ 0 → en base.
     """
     alloc = np.full((n, n), -1, dtype=np.int64)
-    p, d = p.copy(), d.copy()
+    p, d  = p.copy(), d.copy()
     i = j = 0
     while i < n and j < n:
-        q = min(int(p[i]), int(d[j]))
+        q = int(min(p[i], d[j]))
         alloc[i, j] = q
         p[i] -= q
         d[j] -= q
         if p[i] == 0 and d[j] == 0:
-            # dégénérescence : arête à 0 pour garder n+m-1 variables
             if i + 1 < n and j + 1 < n:
-                alloc[i + 1, j] = 0
+                alloc[i + 1, j] = 0   # dégénérescence : arête fictive à 0
             i += 1
             j += 1
         elif p[i] == 0:
@@ -81,28 +88,25 @@ def nord_ouest_np(n, p, d):
 
 def balas_hammer_np(n, couts, p, d):
     """Méthode de Vogel (Balas-Hammer).
-    Utilise np.partition (partial sort O(n)) pour les pénalités.
+    np.partition(sub, 1, axis=…) donne le 2e minimum sans trier complètement.
     """
     alloc = np.full((n, n), -1, dtype=np.int64)
-    p, d = p.copy(), d.copy()
+    p, d  = p.copy(), d.copy()
     act_r = list(range(n))
     act_c = list(range(n))
 
     while act_r and act_c:
-        # Sous-matrice des lignes/colonnes encore actives
-        sub = couts[np.ix_(act_r, act_c)]   # shape (|act_r|, |act_c|)
+        sub    = couts[np.ix_(act_r, act_c)]
         nr, nc = len(act_r), len(act_c)
 
-        # Pénalités lignes : 2e_min - min sur chaque ligne
         if nc >= 2:
-            s2r = np.partition(sub, 1, axis=1)
+            s2r   = np.partition(sub, 1, axis=1)
             pen_r = (s2r[:, 1] - s2r[:, 0]).astype(np.int64)
         else:
             pen_r = sub[:, 0].astype(np.int64)
 
-        # Pénalités colonnes : 2e_min - min sur chaque colonne
         if nr >= 2:
-            s2c = np.partition(sub, 1, axis=0)
+            s2c   = np.partition(sub, 1, axis=0)
             pen_c = (s2c[1, :] - s2c[0, :]).astype(np.int64)
         else:
             pen_c = sub[0, :].astype(np.int64)
@@ -111,43 +115,32 @@ def balas_hammer_np(n, couts, p, d):
         mc = int(pen_c.max())
 
         if mr >= mc:
-            ri = int(pen_r.argmax())
-            i  = act_r[ri]
-            ci = int(sub[ri].argmin())
-            j  = act_c[ci]
+            ri = int(pen_r.argmax());  i = act_r[ri]
+            ci = int(sub[ri].argmin()); j = act_c[ci]
         else:
-            ci = int(pen_c.argmax())
-            j  = act_c[ci]
-            ri = int(sub[:, ci].argmin())
-            i  = act_r[ri]
+            ci = int(pen_c.argmax());  j = act_c[ci]
+            ri = int(sub[:, ci].argmin()); i = act_r[ri]
 
         q = int(min(p[i], d[j]))
         alloc[i, j] = q
         p[i] -= q
         d[j] -= q
-        if p[i] == 0:
-            act_r.remove(i)
-        if d[j] == 0:
-            act_c.remove(j)
+        if p[i] == 0: act_r.remove(i)
+        if d[j] == 0: act_c.remove(j)
 
     return alloc
 
 
 # ════════════════════════════════════════════
-# 3. GRAPHE / DÉGÉNÉRESCENCE
+# 3. GRAPHE / DÉGÉNÉRESCENCE (Union-Find)
 # ════════════════════════════════════════════
 
 def get_basic(alloc):
-    """Retourne la liste des cases de base sous forme [(i,j), ...]."""
     rows, cols = np.where(alloc >= 0)
     return list(zip(rows.tolist(), cols.tolist()))
 
 
 def build_adj(n, basic):
-    """Adjacence du graphe biparti pour les cases de base.
-    row_cols[i] = liste des j tels que (i,j) ∈ base.
-    col_rows[j] = liste des i tels que (i,j) ∈ base.
-    """
     row_cols = [[] for _ in range(n)]
     col_rows = [[] for _ in range(n)]
     for (i, j) in basic:
@@ -157,20 +150,16 @@ def build_adj(n, basic):
 
 
 def corriger_degenere_np(n, alloc):
-    """Ajoute des 0 hors-base jusqu'à avoir exactement 2n-1 variables de base,
-    en utilisant Union-Find pour garantir l'absence de cycle.
-    """
+    """Complète la base à 2n-1 arêtes sans créer de cycle (Union-Find)."""
     requis = 2 * n - 1
     basic  = get_basic(alloc)
     if len(basic) >= requis:
         return
 
-    # Union-Find sur les nœuds biparti : sources 0..n-1, destinations n..2n-1
     parent = list(range(2 * n))
     rank   = [0] * (2 * n)
 
     def find(x):
-        # Path compression
         while parent[x] != x:
             parent[x] = parent[parent[x]]
             x = parent[x]
@@ -179,7 +168,7 @@ def corriger_degenere_np(n, alloc):
     def union(x, y):
         px, py = find(x), find(y)
         if px == py:
-            return False   # cycle → refuser
+            return False
         if rank[px] < rank[py]:
             px, py = py, px
         parent[py] = px
@@ -187,11 +176,9 @@ def corriger_degenere_np(n, alloc):
             rank[px] += 1
         return True
 
-    # Initialiser UF avec les arêtes existantes
     for (i, j) in basic:
         union(i, n + j)
 
-    # Ajouter des arêtes sans créer de cycle
     for i in range(n):
         for j in range(n):
             if len(basic) >= requis:
@@ -206,65 +193,49 @@ def corriger_degenere_np(n, alloc):
 # ════════════════════════════════════════════
 
 def calculer_potentiels_np(n, couts, basic):
-    """Calcule E_S[i] et E_T[j] tels que E_S[i] + E_T[j] = c[i,j] ∀ (i,j) ∈ base.
-    BFS sur le graphe biparti des arêtes de base (2n-1 nœuds à visiter).
-    """
     row_cols, col_rows = build_adj(n, basic)
     potS = [None] * n
     potT = [None] * n
-    potS[0] = 0  # convention : E_S[0] = 0
+    potS[0] = 0
 
     q = deque([('s', 0)])
     while q:
         typ, node = q.popleft()
         if typ == 's':
-            i = node
-            for j in row_cols[i]:
+            for j in row_cols[node]:
                 if potT[j] is None:
-                    potT[j] = int(couts[i, j]) - potS[i]
+                    potT[j] = int(couts[node, j]) - potS[node]
                     q.append(('t', j))
         else:
-            j = node
-            for i in col_rows[j]:
+            for i in col_rows[node]:
                 if potS[i] is None:
-                    potS[i] = int(couts[i, j]) - potT[j]
+                    potS[i] = int(couts[i, node]) - potT[node]
                     q.append(('s', i))
 
     return potS, potT
 
 
 # ════════════════════════════════════════════
-# 5. CYCLE MARCHE-PIED (backtracking + adjacence)
+# 5. CYCLE MARCHE-PIED
 # ════════════════════════════════════════════
 
 def trouver_cycle_np(n, basic, i0, j0):
-    """Trouve le cycle élémentaire passant par la case entrante (i0,j0).
-    Backtracking DFS sur le graphe biparti étendu (base + (i0,j0)).
-    Alterne : cherche dans la même colonne, puis même ligne, etc.
-    Utilise un set path_set pour éviter O(n) de recherche dans path.
-    """
-    ext = basic + [(i0, j0)]
+    ext      = basic + [(i0, j0)]
     row_cols, col_rows = build_adj(n, ext)
-
     result   = [None]
-    path_set = set()   # éléments intermédiaires du chemin courant
+    path_set = set()
 
     def dfs(path, mode):
         if result[0]:
             return
         ci, cj = path[-1]
-
-        if mode == 'col':
-            neighbors = [(ii, cj) for ii in col_rows[cj] if ii != ci]
-        else:
-            neighbors = [(ci, jj) for jj in row_cols[ci] if jj != cj]
-
+        neighbors = ([(ii, cj) for ii in col_rows[cj] if ii != ci]
+                     if mode == 'col'
+                     else [(ci, jj) for jj in row_cols[ci] if jj != cj])
         for nxt in neighbors:
-            # Fermeture du cycle : on revient au point de départ
             if len(path) >= 4 and nxt == (i0, j0):
                 result[0] = path[:]
                 return
-            # Avancer sans revisiter
             if nxt != (i0, j0) and nxt not in path_set:
                 path.append(nxt)
                 path_set.add(nxt)
@@ -279,104 +250,86 @@ def trouver_cycle_np(n, basic, i0, j0):
 
 
 def ameliorer_np(alloc, cycle):
-    """Applique le déplacement θ sur le cycle (cases + aux rangs pairs, - aux rangs impairs)."""
     plus  = cycle[0::2]
     moins = cycle[1::2]
-
     theta = min(int(alloc[i, j]) for (i, j) in moins)
-
     for (i, j) in plus:
         if alloc[i, j] < 0:
             alloc[i, j] = 0
         alloc[i, j] += theta
-
-    sortantes = []
+    sortantes = [(i, j) for (i, j) in moins
+                 if int(alloc[i, j]) - theta == 0]
     for (i, j) in moins:
         alloc[i, j] -= theta
-        if alloc[i, j] == 0:
-            sortantes.append((i, j))
-
-    # Retirer une variable sortante (la première) : case qui vaut 0 parmi les moins
     if sortantes:
         alloc[sortantes[0][0], sortantes[0][1]] = -1
 
 
 # ════════════════════════════════════════════
-# 6. RÉSOLUTION COMPLÈTE
+# 6. RÉSOLUTION  →  retourne (θ, t)
 # ════════════════════════════════════════════
 
 def resoudre_np(n, couts, p, d, methode):
-    """Résout le problème et retourne (nb_iterations, elapsed_s).
-    Retourne (None, None) si le timeout est dépassé.
-
-    Optimisation clé : le calcul des coûts marginaux est vectorisé :
-        marg = couts - (potS[:,None] + potT[None,:])
-    → une seule opération numpy sur la matrice n×n au lieu d'une double boucle Python.
+    """Retourne (theta, t_modi) en secondes (time.perf_counter).
+    theta   = temps de l'initialisation NO ou BH
+    t_modi  = temps du marche-pied avec potentiel
+    Retourne (None, None) si le marche-pied dépasse TIMEOUT_S.
     """
-    t0 = time.time()
-
+    # ── Initialisation ──────────────────────────────────────
+    t0 = time.perf_counter()
     if methode == 'NO':
         alloc = nord_ouest_np(n, p, d)
     else:
         alloc = balas_hammer_np(n, couts, p, d)
+    theta = time.perf_counter() - t0
 
-    nb_iter = 0
-    LIMIT   = 20 * n   # borne de sécurité anti-boucle infinie
+    # ── Marche-pied avec potentiel ───────────────────────────
+    t1    = time.perf_counter()
+    LIMIT = 20 * n   # borne de sécurité anti-boucle
 
     for _ in range(LIMIT):
-        if time.time() - t0 > TIMEOUT_S:
+        if time.perf_counter() - t1 > TIMEOUT_S:
             return None, None
 
         corriger_degenere_np(n, alloc)
 
         basic = get_basic(alloc)
         potS, potT = calculer_potentiels_np(n, couts, basic)
-
         if None in potS or None in potT:
-            break  # graphe non connexe (ne devrait pas arriver)
+            break
 
-        # ── Coûts marginaux vectorisés (numpy broadcasting) ──
+        # Coûts marginaux — calcul vectorisé (clé de performance)
         pS   = np.array(potS, dtype=np.float64)
         pT   = np.array(potT, dtype=np.float64)
         marg = couts.astype(np.float64) - (pS[:, None] + pT[None, :])
-
-        # Masquer les cases de base : on les met à +inf
         marg_hb = np.where(alloc < 0, marg, np.inf)
 
-        min_val = float(marg_hb.min())
-        if min_val >= -1e-9:
-            break   # solution optimale
+        if float(marg_hb.min()) >= -1e-9:
+            break   # optimal
 
-        # Case entrante : le coût marginal le plus négatif
         i0, j0 = np.unravel_index(marg_hb.argmin(), (n, n))
-        i0, j0 = int(i0), int(j0)
-
-        cycle = trouver_cycle_np(n, basic, i0, j0)
+        cycle  = trouver_cycle_np(n, basic, int(i0), int(j0))
         if cycle is None:
             break
-
         ameliorer_np(alloc, cycle)
-        nb_iter += 1
 
-    return nb_iter, time.time() - t0
+    t_modi = time.perf_counter() - t1
+    return theta, t_modi
 
 
 # ════════════════════════════════════════════
-# 7. BENCHMARK PRINCIPAL
+# 7. BENCHMARK
 # ════════════════════════════════════════════
 
 def run_benchmark():
-    """Lance les N_RUNS résolutions pour chaque n ∈ N_VALUES.
-    Sauvegarde ligne par ligne dans CSV_FILE (reprise possible).
-    """
-    # Reprise si CSV existant
+    """100 runs × 7 valeurs de n.  Sauvegarde CSV ligne par ligne (reprise OK)."""
     done = set()
     if os.path.exists(CSV_FILE):
         with open(CSV_FILE, newline='') as f:
             for row in csv.DictReader(f):
                 done.add((int(row['n']), int(row['run'])))
         if done:
-            print(f"  Reprise depuis '{CSV_FILE}' ({len(done)} runs déjà effectués).")
+            print(f"  Reprise depuis '{CSV_FILE}'  ({len(done)} runs déjà faits).")
 
     fieldnames = ['n', 'run', 'theta_NO', 'theta_BH', 't_NO', 't_BH']
     mode = 'a' if done else 'w'
@@ -387,18 +340,17 @@ def run_benchmark():
             writer.writeheader()
 
         for n in N_VALUES:
-            # Estimation mémoire : couts (int32) + alloc (int64) + marg (float64)
-            mem_mb = (n * n * (4 + 8 + 8)) / 1e6
-            print(f"\n{'─'*50}")
+            mem_mb = n * n * (4 + 8 + 8) / 1e6
+            print(f"\n{'─'*52}")
             print(f"  n = {n:<6}  |  mémoire estimée ≈ {mem_mb:.0f} MB")
-            print('─'*50)
+            print('─'*52)
 
             if mem_mb > MEM_LIMIT_MB:
-                print(f"  → Skippé (mémoire estimée dépasse {MEM_LIMIT_MB} MB)")
+                print(f"  → Skippé (>{MEM_LIMIT_MB} MB)")
                 continue
 
-            t_n      = time.time()
-            nb_skip  = 0
+            t_n = time.perf_counter()
+            nb_timeout = 0
 
             for run in range(N_RUNS):
                 if (n, run) in done:
@@ -410,41 +362,32 @@ def run_benchmark():
                 th_BH, t_BH = resoudre_np(n, couts, p.copy(), d.copy(), 'BH')
 
                 if th_NO is None or th_BH is None:
-                    nb_skip += 1
-                    # Valeur négative = timeout, ignorée dans les graphiques
-                    th_NO = th_NO if th_NO is not None else -1
-                    th_BH = th_BH if th_BH is not None else -1
-                    t_NO  = t_NO  if t_NO  is not None else TIMEOUT_S
-                    t_BH  = t_BH  if t_BH  is not None else TIMEOUT_S
+                    nb_timeout += 1
+                    th_NO = th_NO if th_NO is not None else -1.0
+                    th_BH = th_BH if th_BH is not None else -1.0
+                    t_NO  = t_NO  if t_NO  is not None else float(TIMEOUT_S)
+                    t_BH  = t_BH  if t_BH  is not None else float(TIMEOUT_S)
 
-                writer.writerow({
-                    'n': n, 'run': run,
-                    'theta_NO': th_NO, 'theta_BH': th_BH,
-                    't_NO': t_NO,      't_BH': t_BH,
-                })
+                writer.writerow({'n': n, 'run': run,
+                                 'theta_NO': th_NO, 'theta_BH': th_BH,
+                                 't_NO': t_NO,      't_BH': t_BH})
                 f.flush()
 
                 if (run + 1) % 10 == 0:
-                    elapsed = time.time() - t_n
+                    elapsed = time.perf_counter() - t_n
                     pace    = elapsed / (run + 1)
                     eta     = pace * (N_RUNS - run - 1)
                     print(f"  run {run+1:>3}/{N_RUNS}  |  {pace:.3f} s/run  |  ETA {eta:.0f} s")
 
-            total_n = time.time() - t_n
-            print(f"  n={n} terminé en {total_n:.1f}s  (timeouts: {nb_skip}/{N_RUNS})")
+            print(f"  n={n} terminé en {time.perf_counter()-t_n:.1f}s  "
+                  f"(timeouts : {nb_timeout}/{N_RUNS})")
 
 
 # ════════════════════════════════════════════
-# 8. GRAPHIQUES (6 nuages de points)
+# 8. GRAPHIQUES
 # ════════════════════════════════════════════
 
-def plot_resultats():
-    """Trace les 6 nuages de points demandés."""
-    if not os.path.exists(CSV_FILE):
-        print("Pas de données. Lancez d'abord le benchmark.")
-        return
-
-    # Chargement CSV
+def _charger_csv():
     data = {}
     with open(CSV_FILE, newline='') as f:
         for row in csv.DictReader(f):
@@ -453,105 +396,129 @@ def plot_resultats():
                 data[n] = {k: [] for k in ('theta_NO', 'theta_BH', 't_NO', 't_BH')}
             for k in ('theta_NO', 'theta_BH', 't_NO', 't_BH'):
                 v = float(row[k])
-                if v >= 0:   # ignorer les timeouts (valeur = -1)
+                if v >= 0:
                     data[n][k].append(v)
+    return data
 
+
+def plot_resultats():
+    """Trace les 6 nuages de points + enveloppe supérieure + graphique du ratio."""
+    if not os.path.exists(CSV_FILE):
+        print("Pas de données.  Lancez d'abord le benchmark.")
+        return
+
+    data = _charger_csv()
     if not data:
-        print("CSV vide ou toutes les valeurs sont des timeouts.")
+        print("CSV vide.")
         return
 
     ns = sorted(data.keys())
+    rng = np.random.default_rng(42)
 
-    # Configuration des 6 sous-graphiques
+    # ── Figure 1 : 6 nuages de points + enveloppe supérieure ──────────────
     plots_cfg = [
-        # (clé(s), label y, titre, couleur)
-        ('theta_NO',
-         r'$\theta_{NO}(n)$',
-         r'Itérations MODI — départ Nord-Ouest',
-         'steelblue'),
-        ('theta_BH',
-         r'$\theta_{BH}(n)$',
-         r'Itérations MODI — départ Balas-Hammer',
-         'darkorange'),
-        ('t_NO',
-         r'$t_{NO}(n)$ [s]',
-         r'Temps total — Nord-Ouest + MODI',
-         'steelblue'),
-        ('t_BH',
-         r'$t_{BH}(n)$ [s]',
-         r'Temps total — Balas-Hammer + MODI',
-         'darkorange'),
-        (('theta_NO', 't_NO'),
-         r'$\theta_{NO} + t_{NO}$',
-         r'$\theta_{NO}(n) + t_{NO}(n)$',
-         'steelblue'),
-        (('theta_BH', 't_BH'),
-         r'$\theta_{BH} + t_{BH}$',
-         r'$\theta_{BH}(n) + t_{BH}(n)$',
-         'darkorange'),
+        ('theta_NO',           r'$\theta_{NO}(n)$  [s]',  'Temps init. Nord-Ouest',       'steelblue'),
+        ('theta_BH',           r'$\theta_{BH}(n)$  [s]',  'Temps init. Balas-Hammer',     'darkorange'),
+        ('t_NO',               r'$t_{NO}(n)$  [s]',       'Temps marche-pied (départ NO)', 'steelblue'),
+        ('t_BH',               r'$t_{BH}(n)$  [s]',       'Temps marche-pied (départ BH)','darkorange'),
+        (('theta_NO', 't_NO'), r'$\theta_{NO}+t_{NO}$  [s]', r'$\theta_{NO}+t_{NO}$ (total NO)', 'steelblue'),
+        (('theta_BH', 't_BH'), r'$\theta_{BH}+t_{BH}$  [s]', r'$\theta_{BH}+t_{BH}$ (total BH)', 'darkorange'),
     ]
 
-    fig, axes = plt.subplots(2, 3, figsize=(17, 10))
-    fig.suptitle(
-        f'Complexité — Problème de transport ({N_RUNS} runs/n, problèmes carrés n×n)',
+    fig1, axes = plt.subplots(2, 3, figsize=(17, 10))
+    fig1.suptitle(
+        f'Complexité — Problème de transport  ({N_RUNS} runs/n, matrice n×n)',
         fontsize=12, fontweight='bold'
     )
 
-    rng = np.random.default_rng(42)
-
     for ax, (key, ylabel, title, color) in zip(axes.flat, plots_cfg):
+        maxs = []
         for n in ns:
-            if isinstance(key, tuple):
-                a = np.array(data[n][key[0]])
-                b = np.array(data[n][key[1]])
-                if len(a) == 0 or len(b) == 0:
-                    continue
-                vals = a[:min(len(a), len(b))] + b[:min(len(a), len(b))]
-            else:
-                vals = np.array(data[n][key])
-
+            vals = _get_vals(data, n, key)
             if len(vals) == 0:
+                maxs.append(np.nan)
                 continue
+            # Nuage (jitter léger)
+            jitter = rng.uniform(-0.015, 0.015) * n
+            ax.scatter(np.full(len(vals), n) + jitter, vals,
+                       alpha=0.25, s=7, color=color, linewidths=0)
+            maxs.append(float(np.max(vals)))
 
-            # Léger jitter horizontal pour séparer les points superposés
-            jitter = rng.uniform(-0.02, 0.02, len(vals)) * n
-            ax.scatter(
-                np.full(len(vals), n, dtype=float) + jitter,
-                vals,
-                alpha=0.30, s=7, color=color, linewidths=0,
-            )
+        # Enveloppe supérieure
+        ns_ok  = [n for n, m in zip(ns, maxs) if not np.isnan(m)]
+        maxs_ok = [m for m in maxs if not np.isnan(m)]
+        if ns_ok:
+            ax.plot(ns_ok, maxs_ok, color='black', linewidth=1.5,
+                    marker='D', markersize=5, label='max (pire cas)', zorder=6)
+            ax.legend(fontsize=8)
 
-            # Médiane (point noir contouré)
-            ax.scatter(
-                [n], [float(np.median(vals))],
-                s=55, color=color, edgecolors='black', linewidths=0.8, zorder=5,
-            )
-
-        ax.set_xscale('log')
-        # Log y seulement si toutes les valeurs sont > 0
-        all_vals = []
-        for n in ns:
-            if isinstance(key, tuple):
-                a = data[n].get(key[0], [])
-                b = data[n].get(key[1], [])
-                k_ = min(len(a), len(b))
-                all_vals += [x + y for x, y in zip(a[:k_], b[:k_])]
-            else:
-                all_vals += data[n].get(key, [])
-        if all_vals and min(all_vals) > 0:
-            ax.set_yscale('log')
-
-        ax.set_xlabel('n', fontsize=9)
-        ax.set_ylabel(ylabel, fontsize=10)
-        ax.set_title(title, fontsize=10)
-        ax.set_xticks(ns)
-        ax.set_xticklabels([str(n) for n in ns], rotation=40, fontsize=7)
-        ax.grid(True, alpha=0.3, linestyle='--')
+        _format_ax(ax, ns, ylabel, title)
 
     plt.tight_layout()
-    out_path = 'resultats_benchmark.png'
-    plt.savefig(out_path, dpi=150, bbox_inches='tight')
-    print(f"\nGraphique sauvegardé : {out_path}")
+    out1 = 'benchmark_nuages.png'
+    fig1.savefig(out1, dpi=150, bbox_inches='tight')
+    print(f"Graphique 1 sauvegardé : {out1}")
+
+    # ── Figure 2 : ratio (θNO+tNO) / (θBH+tBH) ───────────────────────────
+    fig2, ax2 = plt.subplots(figsize=(9, 5))
+    fig2.suptitle(r'Ratio $(\theta_{NO}+t_{NO})\,/\,(\theta_{BH}+t_{BH})$ en fonction de $n$',
+                  fontsize=12, fontweight='bold')
+
+    ratio_maxs = []
+    for n in ns:
+        no_vals = _get_vals(data, n, ('theta_NO', 't_NO'))
+        bh_vals = _get_vals(data, n, ('theta_BH', 't_BH'))
+        k = min(len(no_vals), len(bh_vals))
+        if k == 0:
+            ratio_maxs.append(np.nan)
+            continue
+        ratios = no_vals[:k] / np.where(bh_vals[:k] > 0, bh_vals[:k], np.nan)
+        ratios  = ratios[~np.isnan(ratios)]
+        jitter  = rng.uniform(-0.015, 0.015) * n
+        ax2.scatter(np.full(len(ratios), n) + jitter, ratios,
+                    alpha=0.3, s=8, color='mediumseagreen', linewidths=0)
+        ratio_maxs.append(float(np.max(ratios)))
+
+    ns_ok    = [n for n, m in zip(ns, ratio_maxs) if not np.isnan(m)]
+    maxs_ok  = [m for m in ratio_maxs if not np.isnan(m)]
+    if ns_ok:
+        ax2.plot(ns_ok, maxs_ok, color='black', linewidth=1.5,
+                 marker='D', markersize=5, label='max (pire cas)', zorder=6)
+        ax2.axhline(1.0, color='red', linestyle='--', linewidth=1, label='ratio = 1')
+        ax2.legend(fontsize=9)
+
+    _format_ax(ax2, ns,
+               r'$(\theta_{NO}+t_{NO})\,/\,(\theta_{BH}+t_{BH})$',
+               'Ratio total NO / total BH')
+
+    plt.tight_layout()
+    out2 = 'benchmark_ratio.png'
+    fig2.savefig(out2, dpi=150, bbox_inches='tight')
+    print(f"Graphique 2 sauvegardé : {out2}")
+
+
+def _get_vals(data, n, key):
+    """Retourne un array numpy des valeurs pour une métrique (simple ou somme)."""
+    if isinstance(key, tuple):
+        a = np.array(data[n].get(key[0], []))
+        b = np.array(data[n].get(key[1], []))
+        k = min(len(a), len(b))
+        return (a[:k] + b[:k]) if k > 0 else np.array([])
+    return np.array(data[n].get(key, []))
+
+
+def _format_ax(ax, ns, ylabel, title):
+    """Mise en forme commune des axes."""
+    ax.set_xscale('log')
+    ylims = ax.get_ylim()
+    if ylims[0] > 0:
+        ax.set_yscale('log')
+    ax.set_xlabel('n', fontsize=9)
+    ax.set_ylabel(ylabel, fontsize=10)
+    ax.set_title(title, fontsize=10)
+    ax.set_xticks(ns)
+    ax.set_xticklabels([str(n) for n in ns], rotation=40, fontsize=7)
+    ax.grid(True, alpha=0.3, linestyle='--')
 
 
 # ════════════════════════════════════════════
@@ -562,17 +529,16 @@ if __name__ == '__main__':
     if len(sys.argv) > 1 and sys.argv[1] == 'plot':
         plot_resultats()
     else:
-        print("╔══════════════════════════════════════════════╗")
-        print("║  Benchmark — Problème de transport           ║")
-        print(f"║  n ∈ {N_VALUES}  ║")
-        print(f"║  {N_RUNS} runs/n  |  timeout = {TIMEOUT_S}s/run         ║")
-        print("╚══════════════════════════════════════════════╝")
-        print(f"\nRésultats → {CSV_FILE}")
-        print("(interruptible : relancer pour reprendre)\n")
+        print("╔══════════════════════════════════════════════════╗")
+        print("║   Benchmark complexité — Problème de transport   ║")
+        print(f"║   n ∈ {N_VALUES}   ║")
+        print(f"║   {N_RUNS} runs/n  |  timeout marche-pied = {TIMEOUT_S}s    ║")
+        print("╚══════════════════════════════════════════════════╝")
+        print(f"  θ = temps init (NO ou BH),  t = temps marche-pied")
+        print(f"  Résultats → {CSV_FILE}  (reprise automatique si interrompu)\n")
 
-        t0 = time.time()
+        t0 = time.perf_counter()
         run_benchmark()
-        elapsed = time.time() - t0
+        elapsed = time.perf_counter() - t0
         print(f"\nBenchmark terminé en {elapsed:.1f}s  ({elapsed/60:.1f} min)")
-
         plot_resultats()
