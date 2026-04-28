@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 
 N_VALUES     = [10, 40, 100, 400, 1000, 4000, 10000]
 N_RUNS       = 100
-CSV_FILE     = "resultats_benchmark.csv"
+CSV_FILE     = "testLiam.csv"
 TIMEOUT_S    = 300      # max secondes pour le marche-pied par run
 MEM_LIMIT_MB = 4000     # skip si estimation mémoire > 4 GB
 
@@ -222,33 +222,68 @@ def calculer_potentiels_np(n, couts, basic):
 def trouver_cycle_np(n, basic, i0, j0):
     ext      = basic + [(i0, j0)]
     row_cols, col_rows = build_adj(n, ext)
-    result   = [None]
-    path_set = set()
+    from collections import deque
+    queue = deque([[(i0, j0)]])
+
+    while queue:
+        path = queue.popleft()
+        ci, cj = path[-1]
+
+        mode = 'col' if len(path) % 2 == 1 else 'ligne'
+
+        neighbors = (
+            [(ii, cj) for ii in col_rows[cj] if ii != ci]
+            if mode == 'col'
+            else [(ci, jj) for jj in row_cols[ci] if jj != cj]
+        )
+
+        for nxt in neighbors:
+            if len(path) >= 4 and nxt == (i0, j0):
+                return path
+
+            if nxt not in path:
+                queue.append(path + [nxt])
+
+    return None
+    #result   = [None]
+
+"""
+    visited = set()
 
     def dfs(path, mode):
         if result[0]:
             return
+        if len(path) > 2 * n:
+            return
+
         ci, cj = path[-1]
+        state = (ci, cj, mode)
+        if state in visited:
+            return
+        visited.add(state)
         neighbors = ([(ii, cj) for ii in col_rows[cj] if ii != ci]
                      if mode == 'col'
                      else [(ci, jj) for jj in row_cols[ci] if jj != cj])
+        if not neighbors:
+            return
+
         for nxt in neighbors:
+            if len(path) >= 2 and nxt == path[-2]:
+                continue
             if len(path) >= 4 and nxt == (i0, j0):
                 result[0] = path[:]
                 return
-            if nxt != (i0, j0) and nxt not in path_set:
+            if nxt != (i0, j0) and nxt not in path:
                 path.append(nxt)
-                path_set.add(nxt)
                 dfs(path, 'ligne' if mode == 'col' else 'col')
                 path.pop()
-                path_set.discard(nxt)
                 if result[0]:
                     return
 
     dfs([(i0, j0)], 'col')
     return result[0]
 
-
+"""
 def ameliorer_np(alloc, cycle):
     plus  = cycle[0::2]
     moins = cycle[1::2]
