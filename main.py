@@ -611,4 +611,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    while True:
+        main()
+        if input("Tester un autre problème ? [o/n] : ").strip().lower() != 'o':
+            break
